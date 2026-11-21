@@ -1,0 +1,16 @@
+[
+  {"service": "checkout-service", "version": "v2.3.9", "time": "2026-11-17T10:15:00Z", "author": "priya", "change": "Add coupon code validation"},
+  {"service": "checkout-service", "version": "v2.4.0", "time": "2026-11-19T16:40:00Z", "author": "marco", "change": "Update checkout page copy"},
+  {"service": "checkout-service", "version": "v2.4.1", "time": "2026-11-20T14:02:00Z", "author": "marco", "change": "Switch payment client to async calls with a 2s timeout"},
+
+  {"service": "inventory-service", "version": "v5.1.2", "time": "2026-11-17T09:00:00Z", "author": "chen", "change": "Bump logging library"},
+
+  {"service": "auth-service", "version": "v1.7.4", "time": "2026-11-18T15:30:00Z", "author": "sam", "change": "Rotate signing keys"},
+  {"service": "auth-service", "version": "v1.8.0", "time": "2026-11-20T11:00:00Z", "author": "sam", "change": "Change log format to JSON"},
+
+  {"service": "notification-service", "version": "v3.2.0", "time": "2026-11-16T12:00:00Z", "author": "lena", "change": "Add SMS templates"},
+
+  {"service": "payment-service", "version": "v4.0.3", "time": "2026-11-19T10:00:00Z", "author": "olu", "change": "Add retry metrics"},
+  {"service": "payment-service", "version": "v4.1.0", "time": "2026-11-20T13:50:00Z", "author": "olu", "change": "Return currency in the payment API response"},
+  {"service": "payment-service", "version": "v4.1.1", "time": "2026-11-20T13:55:00Z", "author": "olu", "change": "Read currency from the new currency_code column"}
+]

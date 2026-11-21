@@ -1,0 +1,9 @@
+2026-11-20T09:10:00Z INFO  StockController GET /stock/sku-1182 200 in 12ms
+2026-11-20T09:12:31Z INFO  StockController GET /stock/sku-0044 200 in 9ms
+2026-11-20T09:15:02Z ERROR HikariPool Connection is not available, request timed out after 30000ms
+2026-11-20T09:15:02Z ERROR StockRepository PSQLException: Connection to postgres-inventory:5432 refused
+2026-11-20T09:15:03Z ERROR StockController GET /stock/sku-1182 500 in 30011ms
+2026-11-20T09:16:40Z ERROR StockRepository PSQLException: Connection to postgres-inventory:5432 refused
+2026-11-20T09:16:40Z ERROR StockController GET /stock/sku-2210 500 in 30008ms
+2026-11-20T09:17:00Z WARN  HealthCheck db=DOWN
+2026-11-20T09:18:22Z ERROR StockRepository PSQLException: Connection to postgres-inventory:5432 refused

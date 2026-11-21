@@ -1,0 +1,5 @@
+2026-11-20T15:00:00Z INFO  EmailSender sent 120 emails in batch 8812
+2026-11-20T15:05:00Z WARN  EmailSender batch 8813 took 4200ms (usual: 900ms)
+2026-11-20T15:10:00Z INFO  EmailSender sent 118 emails in batch 8814
+2026-11-20T15:15:00Z WARN  EmailSender batch 8815 took 3900ms (usual: 900ms)
+2026-11-20T15:20:00Z INFO  HealthCheck status=UP

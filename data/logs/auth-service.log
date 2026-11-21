@@ -1,0 +1,9 @@
+2026-11-20T10:30:00Z INFO  LoginController POST /login 200 in 88ms
+2026-11-20T10:40:15Z ERROR IdentityProviderClient HTTP 429 Too Many Requests from idp.example.com
+2026-11-20T10:40:15Z ERROR LoginController POST /login 503 in 140ms
+2026-11-20T10:44:52Z ERROR IdentityProviderClient HTTP 429 Too Many Requests from idp.example.com
+2026-11-20T10:52:10Z ERROR IdentityProviderClient HTTP 429 Too Many Requests from idp.example.com
+2026-11-20T11:00:04Z INFO  Application started version=v1.8.0
+{"time": "2026-11-20T11:03:40Z", "level": "ERROR", "logger": "IdentityProviderClient", "message": "HTTP 429 Too Many Requests from idp.example.com"}
+{"time": "2026-11-20T11:03:40Z", "level": "ERROR", "logger": "LoginController", "message": "POST /login 503 in 131ms"}
+{"time": "2026-11-20T11:09:12Z", "level": "ERROR", "logger": "IdentityProviderClient", "message": "HTTP 429 Too Many Requests from idp.example.com"}

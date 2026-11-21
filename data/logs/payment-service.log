@@ -1,0 +1,10 @@
+2026-11-20T13:48:10Z INFO  PaymentController POST /payments 200 in 140ms
+2026-11-20T13:50:06Z INFO  Application started version=v4.1.0
+2026-11-20T13:52:30Z INFO  PaymentController POST /payments 200 in 151ms
+2026-11-20T13:55:05Z INFO  Application started version=v4.1.1
+2026-11-20T13:55:06Z INFO  Flyway no migrations to apply, schema is up to date
+2026-11-20T13:56:14Z ERROR PaymentRepository PSQLException: column "currency_code" of relation "payments" does not exist
+2026-11-20T13:56:14Z ERROR PaymentController POST /payments 500 in 31ms
+2026-11-20T13:57:02Z ERROR PaymentRepository PSQLException: column "currency_code" of relation "payments" does not exist
+2026-11-20T13:57:02Z ERROR PaymentController POST /payments 500 in 29ms
+2026-11-20T14:03:10Z WARN  PaymentController slow request POST /payments 1950ms
