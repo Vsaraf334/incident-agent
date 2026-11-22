@@ -94,3 +94,31 @@ def test_tool_error_after_approval_is_still_an_error():
     result = handle_call(block("file_incident", **garbled), run, say_yes)
     assert result["is_error"] is True
     assert "tool-call markup" in result["content"]
+
+
+# ------------------------- failed writes are capped ---------------------------
+
+GARBLED = dict(PROPOSAL, cause='C</cause>\n<parameter name="evidence">E')
+
+
+def test_failed_write_is_counted():
+    run = AgentRun(alert="a")
+    handle_call(block("file_incident", **GARBLED), run, say_yes)  # real tool rejects it
+    assert run.failed_writes == 1
+    assert run.rejections == 0  # a tool failure is not a human "no"
+
+
+def test_successful_write_is_not_counted(filed):
+    run = AgentRun(alert="a")
+    handle_call(block("file_incident", **PROPOSAL), run, say_yes)
+    assert run.failed_writes == 0
+
+
+def test_stops_offering_after_max_failed_writes():
+    run = AgentRun(alert="a")
+    for _ in range(agent.MAX_FAILED_WRITES):
+        handle_call(block("file_incident", **GARBLED), run, say_yes)
+    result = handle_call(block("file_incident", **PROPOSAL), run, never_ask)
+    assert result["is_error"] is True
+    assert "already failed" in result["content"]
+    assert len(run.calls) == agent.MAX_FAILED_WRITES + 1

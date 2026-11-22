@@ -63,3 +63,28 @@ def test_every_tool_is_strict():
     for tool in TOOLS:
         assert tool.get("strict") is True
         assert tool["input_schema"].get("additionalProperties") is False
+
+
+def test_agent_error_keeps_the_trace(monkeypatch):
+    """A failed run raises AgentError, and e.run still holds what happened."""
+    import pytest
+    from anthropic.types import Message, Usage
+
+    import agent
+
+    def fake_create(**_kwargs):
+        return Message(
+            id="msg_1",
+            type="message",
+            role="assistant",
+            model="fake",
+            content=[],
+            stop_reason="max_tokens",
+            usage=Usage(input_tokens=100, output_tokens=4096),
+        )
+
+    monkeypatch.setattr(agent.client.messages, "create", fake_create)
+    with pytest.raises(agent.AgentError, match="max_tokens") as info:
+        agent.run_agent("checkout-service: 5xx", verbose=False)
+    assert info.value.run.steps == 1
+    assert info.value.run.output_tokens == 4096

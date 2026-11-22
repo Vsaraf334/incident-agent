@@ -52,6 +52,7 @@ FUNCTIONS = {
 
 NEEDS_APPROVAL = {"file_incident"}  # write tools: a human says yes first
 MAX_REJECTIONS = 2  # after this many "no"s, stop asking and reject automatically
+MAX_FAILED_WRITES = 2  # after this many approved-but-failed writes, stop trying
 
 SERVICE = {"type": "string", "description": "Service name, e.g. checkout-service"}
 
@@ -158,6 +159,19 @@ class AgentRun:
     input_tokens: int = 0
     output_tokens: int = 0
     rejections: int = 0
+    failed_writes: int = 0  # approved write calls that the tool itself rejected
+
+
+class AgentError(RuntimeError):
+    """The agent failed. .run holds everything it did up to the failure.
+
+    Like a Java exception that carries context: the caller (the evals) can still
+    see the trace, instead of only the message.
+    """
+
+    def __init__(self, message: str, run: AgentRun) -> None:
+        super().__init__(message)
+        self.run = run
 
 
 def run_tool(block: ToolUseBlock, run: AgentRun) -> ToolResultBlockParam:
@@ -219,6 +233,13 @@ TOO_MANY_REJECTIONS = (
 )
 
 
+TOO_MANY_FAILED_WRITES = (
+    f"Not filed: file_incident has already failed {MAX_FAILED_WRITES} times in this "
+    "investigation. Do not call it again; report your findings, and say that "
+    "the incident still needs to be filed."
+)
+
+
 def reject(block: ToolUseBlock, run: AgentRun, message: str) -> ToolResultBlockParam:
     """Record a rejected call (the tool never ran) and return its error result."""
     run.calls.append(
@@ -243,6 +264,10 @@ def handle_call(
     - a tool not in NEEDS_APPROVAL: just run_tool(block, run)
     - already MAX_REJECTIONS rejections in this run: reject(..., TOO_MANY_REJECTIONS)
       WITHOUT asking (don't nag the engineer)
+    - NEW: already MAX_FAILED_WRITES failed writes: reject(..., TOO_MANY_FAILED_WRITES)
+      WITHOUT asking
+    - NEW: approved, but the tool returned an error (result["is_error"] is True,
+      e.g. the content check found leaked markup): count it in run.failed_writes
     - otherwise ask: approved, reason = approve(block)
         yes -> result = run_tool(block, run); mark the recorded call approved
                (hint: run.calls[-1] is the call run_tool just recorded); return result
@@ -253,10 +278,14 @@ def handle_call(
         return run_tool(block, run)
     if run.rejections >= MAX_REJECTIONS:
         return reject(block, run, TOO_MANY_REJECTIONS)
+    if run.failed_writes >= MAX_FAILED_WRITES:
+        return reject(block, run, TOO_MANY_FAILED_WRITES)
     approved, reason = approve(block)
     if approved:
         result = run_tool(block, run)
         run.calls[-1].approved = True
+        if result.get("is_error"):
+            run.failed_writes += 1
         return result
     run.rejections += 1
     return reject(block, run, rejection_message(reason))
@@ -293,10 +322,10 @@ def run_agent(
         if response.stop_reason == "end_turn":
             run.answer = "".join(b.text for b in response.content if b.type == "text")
             if not run.answer.strip():  # the on-call engineer must always get a report
-                raise RuntimeError("Agent ended without an answer")
+                raise AgentError("Agent ended without an answer", run)
             return run
         if response.stop_reason != "tool_use":
-            raise RuntimeError(f"Unexpected stop_reason: {response.stop_reason}")
+            raise AgentError(f"Unexpected stop_reason: {response.stop_reason}", run)
 
         calls = [b for b in response.content if b.type == "tool_use"]
         if verbose:
@@ -309,7 +338,7 @@ def run_agent(
         results = [handle_call(b, run, approve) for b in calls]
         messages.append({"role": "user", "content": results})
 
-    raise RuntimeError(f"Agent did not finish within {MAX_STEPS} steps")
+    raise AgentError(f"Agent did not finish within {MAX_STEPS} steps", run)
 
 
 # ================================ TRY IT ======================================

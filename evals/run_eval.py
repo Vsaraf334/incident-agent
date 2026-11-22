@@ -44,7 +44,24 @@ def run_one(scenario: dict) -> dict:
         run = agent.run_agent(scenario["alert"], approve=approve_all, verbose=False)
         incident = filed_incident(run)
         verdict = judge(scenario, run.answer, incident["cause"] if incident else None)
-    except Exception as e:  # noqa: BLE001 - one bad run must not stop the other 44
+    except agent.AgentError as e:  # the agent failed: keep its trace for debugging
+        return {
+            "id": scenario["id"],
+            "success": False,
+            "crashed": str(e),
+            "steps": e.run.steps,
+            "tokens": e.run.input_tokens + e.run.output_tokens,
+            "trace": [
+                {
+                    "tool": c.name,
+                    "input": c.input,
+                    "is_error": c.is_error,
+                    "output": c.output[:300],
+                }
+                for c in e.run.calls
+            ],
+        }
+    except Exception as e:  # noqa: BLE001 - e.g. a network error; one bad run must not stop the others
         return {
             "id": scenario["id"],
             "success": False,
