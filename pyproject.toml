@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=2.12.0",
+    "pydantic>=2.14.4",
 ]
 
 [dependency-groups]
@@ -11,3 +12,7 @@ dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.6",
 ]
+
+[tool.ruff.lint.isort]
+# our own modules (src/ and evals/ are on sys.path, not installed packages)
+known-first-party = ["agent", "tools", "grading", "judge"]

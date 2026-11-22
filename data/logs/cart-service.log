@@ -1,0 +1,6 @@
+2026-11-20T11:10:00Z INFO  CartController GET /cart 200 in 18ms
+2026-11-20T11:20:05Z ERROR RedisClient connection reset by peer (redis-cart:6379)
+2026-11-20T11:20:05Z INFO  RedisClient retry 1/3 succeeded
+2026-11-20T11:20:05Z INFO  CartController GET /cart 200 in 64ms
+2026-11-20T11:30:00Z INFO  CartController GET /cart 200 in 17ms
+2026-11-20T11:40:00Z INFO  HealthCheck status=UP

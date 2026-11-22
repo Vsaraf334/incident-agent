@@ -10,3 +10,6 @@ scratch/
 
 # incidents the agent files (created at runtime)
 incidents/
+
+# eval run details (numbers go in the README)
+evals/results.jsonl

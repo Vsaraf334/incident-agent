@@ -265,8 +265,13 @@ def handle_call(
 # ==============================================================================
 
 
-def run_agent(alert: str, approve: Approver = ask_human) -> AgentRun:
-    """Loop until Claude stops asking for tools. Returns the run, with its trace."""
+def run_agent(
+    alert: str, approve: Approver = ask_human, verbose: bool = True
+) -> AgentRun:
+    """Loop until Claude stops asking for tools. Returns the run, with its trace.
+
+    verbose=False hides the step-by-step prints (the evals run 45 agents).
+    """
     run = AgentRun(alert=alert)
     messages: list[MessageParam] = [{"role": "user", "content": alert}]
 
@@ -294,12 +299,12 @@ def run_agent(alert: str, approve: Approver = ask_human) -> AgentRun:
             raise RuntimeError(f"Unexpected stop_reason: {response.stop_reason}")
 
         calls = [b for b in response.content if b.type == "tool_use"]
-        for b in calls:
-            print(f"  step {step}: {b.name}({b.input})")
-
-        for b in response.content:
-            if b.type == "text" and b.text.strip():
-                print(f"  step {step} thinks: {b.text.strip()}")
+        if verbose:
+            for b in calls:
+                print(f"  step {step}: {b.name}({b.input})")
+            for b in response.content:
+                if b.type == "text" and b.text.strip():
+                    print(f"  step {step} thinks: {b.text.strip()}")
 
         results = [handle_call(b, run, approve) for b in calls]
         messages.append({"role": "user", "content": results})

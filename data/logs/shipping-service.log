@@ -1,0 +1,7 @@
+2026-11-20T08:50:12Z INFO  CarrierClient POST https://api.carrier.example/labels 200 in 310ms
+2026-11-20T08:58:40Z INFO  CarrierClient POST https://api.carrier.example/labels 200 in 295ms
+2026-11-20T09:00:03Z ERROR CarrierClient SSLHandshakeException: PKIX path validation failed: certificate for api.carrier.example expired at 2026-11-20T09:00:00Z
+2026-11-20T09:00:03Z ERROR LabelController POST /labels 502 in 40ms
+2026-11-20T09:02:51Z ERROR CarrierClient SSLHandshakeException: PKIX path validation failed: certificate for api.carrier.example expired at 2026-11-20T09:00:00Z
+2026-11-20T09:02:51Z ERROR LabelController POST /labels 502 in 38ms
+2026-11-20T09:05:00Z INFO  HealthCheck status=UP

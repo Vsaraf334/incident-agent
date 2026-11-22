@@ -1,0 +1,9 @@
+2026-11-20T09:55:10Z INFO  ProfileController PUT /profile 200 in 35ms
+2026-11-20T10:00:04Z INFO  Application started version=v6.3.0
+2026-11-20T10:01:22Z ERROR ProfileValidator SchemaValidationException: required property 'phone' is missing
+2026-11-20T10:01:22Z ERROR ProfileController PUT /profile 500 in 12ms
+2026-11-20T10:47:03Z ERROR ProfileValidator SchemaValidationException: required property 'phone' is missing
+2026-11-20T10:47:03Z ERROR ProfileController PUT /profile 500 in 11ms
+2026-11-20T12:00:05Z INFO  Application started version=v6.3.1
+2026-11-20T12:06:40Z ERROR ProfileValidator SchemaValidationException: required property 'phone' is missing
+2026-11-20T12:06:40Z ERROR ProfileController PUT /profile 500 in 13ms
