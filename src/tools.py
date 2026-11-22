@@ -11,6 +11,27 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 INCIDENTS_DIR = ROOT / "incidents"
 SEVERITIES = ("SEV1", "SEV2", "SEV3")
+MAX_DEPLOYS = 10
+MAX_LOG_LINES = 50
+
+# The model sometimes leaks its own tool-call format into a long text field,
+# e.g. 'cause': '...</cause>\n<parameter name="evidence">...'. Such a field is
+# rejected, so a garbled incident is never written.
+MARKUP = (
+    "<parameter",
+    "</parameter>",
+    "</invoke>",
+    "</title>",
+    "</cause>",
+    "</evidence>",
+)
+
+
+def clamp(value: int, low: int, high: int) -> int:
+    """Force value into [low, high]. A limit of 0 or -1 would silently drop
+    results (lines[:-1] loses the last line), so out-of-range limits are fixed,
+    not trusted."""
+    return max(low, min(value, high))
 
 
 def load_deploys(data_dir: Path = DATA_DIR) -> list[dict]:
@@ -41,6 +62,7 @@ def get_recent_deploys(service: str, limit: int = 3, data_dir: Path = DATA_DIR) 
     """
     check_service(service, data_dir)
     deploys = [d for d in load_deploys(data_dir) if d["service"] == service]
+    limit = clamp(limit, 1, MAX_DEPLOYS)
     deploys = sorted(deploys, key=lambda d: d["time"], reverse=True)[:limit]
     if not deploys:
         return f"No deploys found for {service}."
@@ -58,6 +80,7 @@ def search_logs(
     If nothing matches: "No log lines in <service> match '<query>'."
     """
     check_service(service, data_dir)
+    limit = clamp(limit, 1, MAX_LOG_LINES)
     lines = (data_dir / "logs" / f"{service}.log").read_text().splitlines()
     matching_lines = [line for line in lines if query.lower() in line.lower()][:limit]
     if not matching_lines:
@@ -91,6 +114,15 @@ def file_incident(
         raise ValueError(
             f"Invalid severity '{severity}'. Allowed values: {', '.join(SEVERITIES)}"
         )
+    for name, value in {"title": title, "cause": cause, "evidence": evidence}.items():
+        if not value.strip():
+            raise ValueError(f"The {name} field is empty. Nothing was filed.")
+        if any(marker in value for marker in MARKUP):
+            raise ValueError(
+                f"The {name} field contains tool-call markup such as "
+                "'<parameter name=...>'. Nothing was filed. Call file_incident again "
+                "with each value in its own field and plain text only."
+            )
     incidents_dir.mkdir(parents=True, exist_ok=True)
     number = len(list(incidents_dir.glob("INC-*.md"))) + 1
     incident_id = f"INC-{number:03d}"

@@ -123,3 +123,45 @@ def test_file_incident_bad_severity_writes_nothing(tmp_path):
     with pytest.raises(ValueError, match="SEV1, SEV2, SEV3"):
         file_incident("A", "c", "e", "high", incidents_dir=tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+# ------------------------------ limits are clamped -----------------------------
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_search_limit_below_one_returns_one_line(limit):
+    assert len(search_logs("checkout-service", "ERROR", limit=limit).splitlines()) == 1
+
+
+def test_search_limit_above_max_is_capped():
+    assert search_logs("checkout-service", "", limit=999) == search_logs(
+        "checkout-service", "", limit=50
+    )
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_deploys_limit_below_one_returns_one(limit):
+    assert get_recent_deploys("checkout-service", limit=limit).startswith("v2.4.1")
+    assert len(get_recent_deploys("checkout-service", limit=limit).splitlines()) == 1
+
+
+# ------------------------ garbled content is rejected ------------------------
+
+
+def test_file_incident_rejects_leaked_markup(tmp_path):
+    garbled = 'Timeout too short.</cause>\n<parameter name="evidence">14:03 Timeout'
+    with pytest.raises(ValueError, match="cause field contains tool-call markup"):
+        file_incident("A", garbled, "placeholder", "SEV2", incidents_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_file_incident_rejects_empty_evidence(tmp_path):
+    with pytest.raises(ValueError, match="evidence field is empty"):
+        file_incident("A", "cause", "  ", "SEV2", incidents_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_file_incident_allows_html_like_text_in_evidence(tmp_path):
+    # Log lines can contain angle brackets; only tool-call markers are rejected.
+    file_incident("A", "c", "GET /items?a=<b> 500", "SEV3", incidents_dir=tmp_path)
+    assert (tmp_path / "INC-001.md").exists()
