@@ -2,10 +2,12 @@
 
 Run:  uv run --env-file .env python src/agent.py "checkout-service: 5xx error rate at 12%"
 
-Step 2: file_incident runs WITHOUT asking anyone. Approval comes in step 3.
+Read tools run freely. file_incident (a write) runs only after a human approves it.
 """
 
 import sys
+import textwrap
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import anthropic
@@ -35,6 +37,9 @@ deploys that support it.
 - If the evidence is weak or there are no errors, file nothing. Say what you checked and \
 what you found.
 
+- If the engineer rejects an incident, follow their reason if they give one. Without a \
+reason, don't file it again.
+
 End with a short summary: the cause (or "unknown"), the evidence, and whether you filed \
 an incident."""
 
@@ -44,6 +49,9 @@ FUNCTIONS = {
     "search_logs": search_logs,
     "file_incident": file_incident,
 }
+
+NEEDS_APPROVAL = {"file_incident"}  # write tools: a human says yes first
+MAX_REJECTIONS = 2  # after this many "no"s, stop asking and reject automatically
 
 SERVICE = {"type": "string", "description": "Service name, e.g. checkout-service"}
 
@@ -136,6 +144,7 @@ class ToolCall:
     input: dict
     output: str
     is_error: bool
+    approved: bool | None = None  # None: no approval needed (a read tool)
 
 
 @dataclass
@@ -148,6 +157,7 @@ class AgentRun:
     steps: int = 0  # API calls
     input_tokens: int = 0
     output_tokens: int = 0
+    rejections: int = 0
 
 
 def run_tool(block: ToolUseBlock, run: AgentRun) -> ToolResultBlockParam:
@@ -175,7 +185,87 @@ def run_tool(block: ToolUseBlock, run: AgentRun) -> ToolResultBlockParam:
     return result
 
 
-def run_agent(alert: str) -> AgentRun:
+# An approver gets Claude's proposed call and returns (approved, reason).
+# Production asks a person; the evals and tests pass in an automatic one.
+Approver = Callable[[ToolUseBlock], tuple[bool, str]]
+
+
+def ask_human(block: ToolUseBlock) -> tuple[bool, str]:
+    """Show the proposed incident and ask on the console. Enter alone means no."""
+    proposal = block.input
+    print("\n  Claude wants to file an incident:")
+    print(f"    title:    {proposal['title']}")
+    print(f"    severity: {proposal['severity']}")
+    print(f"    cause:    {proposal['cause']}")
+    print(f"    evidence:\n{textwrap.indent(str(proposal['evidence']), '      ')}")
+    if input("  File it? [y/N] ").strip().lower() == "y":
+        return True, ""
+    return False, input("  Reason (optional, Enter to skip): ").strip()
+
+
+def rejection_message(reason: str) -> str:
+    """What Claude reads when the engineer says no."""
+    if reason:
+        return f"Rejected by the on-call engineer. Nothing was filed. Their reason: {reason}"
+    return (
+        "Rejected by the on-call engineer. Nothing was filed. "
+        "Do not file it again; report your findings instead."
+    )
+
+
+TOO_MANY_REJECTIONS = (
+    f"Not filed: the engineer has rejected {MAX_REJECTIONS} incidents in this "
+    "investigation. Do not call file_incident again; report your findings instead."
+)
+
+
+def reject(block: ToolUseBlock, run: AgentRun, message: str) -> ToolResultBlockParam:
+    """Record a rejected call (the tool never ran) and return its error result."""
+    run.calls.append(
+        ToolCall(block.name, block.input, message, is_error=True, approved=False)
+    )
+    return {
+        "type": "tool_result",
+        "tool_use_id": block.id,
+        "content": message,
+        "is_error": True,
+    }
+
+
+# ================================= YOUR PART ==================================
+
+
+def handle_call(
+    block: ToolUseBlock, run: AgentRun, approve: Approver
+) -> ToolResultBlockParam:
+    """Run one tool call, asking for approval first if the tool needs it.
+
+    - a tool not in NEEDS_APPROVAL: just run_tool(block, run)
+    - already MAX_REJECTIONS rejections in this run: reject(..., TOO_MANY_REJECTIONS)
+      WITHOUT asking (don't nag the engineer)
+    - otherwise ask: approved, reason = approve(block)
+        yes -> result = run_tool(block, run); mark the recorded call approved
+               (hint: run.calls[-1] is the call run_tool just recorded); return result
+        no  -> count the rejection in run.rejections;
+               return reject(block, run, rejection_message(reason))
+    """
+    if block.name not in NEEDS_APPROVAL:
+        return run_tool(block, run)
+    if run.rejections >= MAX_REJECTIONS:
+        return reject(block, run, TOO_MANY_REJECTIONS)
+    approved, reason = approve(block)
+    if approved:
+        result = run_tool(block, run)
+        run.calls[-1].approved = True
+        return result
+    run.rejections += 1
+    return reject(block, run, rejection_message(reason))
+
+
+# ==============================================================================
+
+
+def run_agent(alert: str, approve: Approver = ask_human) -> AgentRun:
     """Loop until Claude stops asking for tools. Returns the run, with its trace."""
     run = AgentRun(alert=alert)
     messages: list[MessageParam] = [{"role": "user", "content": alert}]
@@ -211,7 +301,7 @@ def run_agent(alert: str) -> AgentRun:
             if b.type == "text" and b.text.strip():
                 print(f"  step {step} thinks: {b.text.strip()}")
 
-        results = [run_tool(b, run) for b in calls]
+        results = [handle_call(b, run, approve) for b in calls]
         messages.append({"role": "user", "content": results})
 
     raise RuntimeError(f"Agent did not finish within {MAX_STEPS} steps")

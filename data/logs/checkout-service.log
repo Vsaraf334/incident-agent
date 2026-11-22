@@ -1,9 +1,12 @@
-2026-11-20T13:58:02Z INFO  OrderController POST /orders 201 in 182ms
-2026-11-20T13:59:40Z INFO  OrderController POST /orders 201 in 175ms
+2026-11-20T13:58:02Z INFO  PaymentClient payment-service responded in 2310ms (timeout 5000ms)
+2026-11-20T13:58:02Z INFO  OrderController POST /orders 201 in 2482ms
+2026-11-20T13:59:40Z INFO  PaymentClient payment-service responded in 2140ms (timeout 5000ms)
+2026-11-20T13:59:40Z INFO  OrderController POST /orders 201 in 2305ms
 2026-11-20T14:00:11Z WARN  CouponService coupon SUMMER25 expired, ignoring
 2026-11-20T14:02:05Z INFO  Application started version=v2.4.1
 2026-11-20T14:03:12Z ERROR PaymentClient TimeoutException: payment-service did not respond within 2000ms
 2026-11-20T14:03:12Z ERROR OrderController POST /orders 502 in 2004ms
+2026-11-20T14:03:30Z INFO  PaymentClient payment-service responded in 1870ms (timeout 2000ms)
 2026-11-20T14:03:30Z INFO  OrderController POST /orders 201 in 1890ms
 2026-11-20T14:04:01Z ERROR PaymentClient TimeoutException: payment-service did not respond within 2000ms
 2026-11-20T14:04:01Z ERROR OrderController POST /orders 502 in 2001ms
