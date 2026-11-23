@@ -23,7 +23,7 @@ from tools import (
 )
 
 client = anthropic.Anthropic()
-MODEL = "claude-haiku-5-5"
+MODEL = "claude-sonnet-5-5"  # Haiku: same causes, but 7 of 45 eval runs could not file (README)
 MAX_STEPS = 8  # API calls; an investigation needs more than a docs search did
 
 SYSTEM_PROMPT = """You are the on-call engineer for an online shop. You get an alert and \

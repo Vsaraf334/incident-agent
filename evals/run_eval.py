@@ -8,6 +8,7 @@ For each run:
 A scenario passes if at least 2 of its 3 runs succeed. Gate: >= 10 of 15 scenarios.
 
 Run:  uv run --env-file .env python evals/run_eval.py [--runs 3] [--only checkout-timeout]
+                                                      [--model claude-sonnet-5-5]
 """
 
 import argparse
@@ -24,11 +25,11 @@ sys.path.insert(0, str(EVALS.parent / "src"))
 
 import agent
 from grading import filed_incident, missing_checks, tools_used
-from judge import judge
+from judge import JUDGE_MODEL, judge
 from tools import file_incident
 
 SCENARIOS = EVALS / "scenarios.jsonl"
-RESULTS = EVALS / "results.jsonl"  # git-ignored; the numbers go in the README
+# results-<model>.jsonl files are git-ignored; the numbers go in the README
 GATE = 10
 
 
@@ -49,6 +50,7 @@ def run_one(scenario: dict) -> dict:
             "id": scenario["id"],
             "success": False,
             "crashed": str(e),
+            "failed_writes": e.run.failed_writes,
             "steps": e.run.steps,
             "tokens": e.run.input_tokens + e.run.output_tokens,
             "trace": [
@@ -81,6 +83,7 @@ def run_one(scenario: dict) -> dict:
         "reason": verdict.reason,
         "missing": missing,
         "severity": incident["severity"] if incident else None,
+        "failed_writes": run.failed_writes,
         "steps": run.steps,
         "tool_calls": len(run.calls),
         "tools": tools_used(run),
@@ -135,6 +138,11 @@ def report(scenarios: list[dict], results: list[dict], runs: int) -> None:
             f"max {max(r['tokens'] for r in done):,} tokens"
         )
     severities = [f"{r['id']}={r['severity']}" for r in done if r["severity"]]
+    garbled = [r.get("failed_writes", 0) for r in results]
+    print(
+        f"Failed file_incident calls (e.g. leaked markup): {sum(garbled)}, "
+        f"in {sum(n > 0 for n in garbled)}/{len(results)} runs"
+    )
     print(f"Severities filed (reported, not graded): {', '.join(severities) or 'none'}")
 
 
@@ -143,6 +151,7 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--only", help="run a single scenario id")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--model", default=agent.MODEL, help="the agent's model")
     args = parser.parse_args()
 
     with SCENARIOS.open() as f:
@@ -154,21 +163,26 @@ def main() -> None:
     tmp = tempfile.mkdtemp(prefix="eval-incidents-")
     agent.FUNCTIONS["file_incident"] = partial(file_incident, incidents_dir=Path(tmp))
 
+    agent.MODEL = args.model  # run_agent reads agent.MODEL on every call
+    results_file = EVALS / f"results-{args.model}.jsonl"
+    print(f"Agent model: {args.model}. Judge: {JUDGE_MODEL}.")
+
     jobs = [s for s in scenarios for _ in range(args.runs)]
     print(
         f"{len(jobs)} runs ({len(scenarios)} scenarios x {args.runs}), "
         f"{args.workers} at a time..."
     )
-    with ThreadPoolExecutor(
-        max_workers=args.workers
-    ) as pool:  # like an ExecutorService
+    # like a Java ExecutorService: run the agents 4 at a time
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(run_one, jobs))
 
-    with RESULTS.open("w") as f:
+    with results_file.open("w") as f:
         for r in results:
             f.write(json.dumps(r) + "\n")
     report(scenarios, results, args.runs)
-    print(f"\nDetails (answers, judge reasons): {RESULTS.relative_to(EVALS.parent)}")
+    print(
+        f"\nDetails (answers, judge reasons): {results_file.relative_to(EVALS.parent)}"
+    )
 
 
 if __name__ == "__main__":

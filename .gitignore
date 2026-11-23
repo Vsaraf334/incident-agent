@@ -12,4 +12,4 @@ scratch/
 incidents/
 
 # eval run details (numbers go in the README)
-evals/results.jsonl
+evals/results*.jsonl
