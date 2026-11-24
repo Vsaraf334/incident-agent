@@ -6,7 +6,9 @@ Every behaviour is measured with an evaluation suite of 15 scenarios, each run 3
 
 All data is fake: 11 services, their deploys and their logs, in `data/`.
 
-Built with Python and the Anthropic Python SDK (Claude Sonnet 5.5 as the agent and the judge; Claude Haiku 5.5 measured as a cheaper alternative).
+The agent exists twice: a hand-written loop, and a [LangGraph rebuild](#langgraph-rebuild) with pausable approval. Both pass the same eval with the same scores.
+
+Built with Python, the Anthropic Python SDK and LangGraph (Claude Sonnet 5.5 as the agent and the judge; Claude Haiku 5.5 measured as a cheaper alternative).
 
 ## Example
 
@@ -51,10 +53,11 @@ alert ──► agent loop (src/agent.py) ──► Claude ──► tool_use �
 | --- | --- |
 | `src/tools.py` | The three tools as plain functions over `data/`: `get_recent_deploys`, `search_logs`, `file_incident` (writes `incidents/INC-001.md`). |
 | `src/agent.py` | Tool schemas, system prompt, the agent loop, the approval step, and the trace (`AgentRun`, `ToolCall`). |
+| `src/graph_agent.py` | The same agent as a LangGraph graph: `agent`, `approve` and `tools` nodes, approval with `interrupt()`. Reuses the tools, schemas and prompt from `agent.py`. |
 | `evals/scenarios.jsonl` | 15 scenarios: alert, whether an incident is expected, the expected cause, what must not be blamed, and which evidence must be checked. |
 | `evals/grading.py` | Code graders that read the trace: what was filed, which checks were skipped, tool counts. |
 | `evals/judge.py` | An LLM judge (Sonnet 5.5) that grades only the concluded cause. |
-| `evals/run_eval.py` | Runs every scenario 3 times, 4 agents in parallel, and prints the report. |
+| `evals/run_eval.py` | Runs every scenario 3 times, 4 agents in parallel, and prints the report. `--impl loop\|graph` picks the implementation, `--model` the agent's model. |
 
 ## Evaluation
 
@@ -98,6 +101,51 @@ Sonnet costs more per token, so it is likely still more expensive per run despit
 
 **Run-to-run noise:** two Haiku evals on identical code gave 42/45 and 37/45 runs. Single runs of an agent eval are samples, not measurements; compare differences larger than that.
 
+## LangGraph rebuild
+
+`src/graph_agent.py` rebuilds the agent as a graph, reusing the same tools, schemas, system prompt and approval rules. Only the control flow changes:
+
+```
+START ─► agent ──(tool calls?)──yes─► approve ─► tools ─┐
+           ▲      │                                       │
+           │      no ─► END                               │
+           └──────────────────────────────────────────────┘
+```
+
+- **agent** calls Claude once; **route** sends tool calls to **approve**, or ends.
+- **approve** calls `interrupt()` for each `file_incident`: the graph stops, its state is saved by a checkpointer, and the caller resumes it with `Command(resume={"approved": ..., "reason": ...})`. It only decides; it never runs a tool.
+- **tools** runs read tools and approved writes; a rejected write becomes an error result and never runs.
+- `run_graph()` keeps the same contract as the loop's `run_agent()` (same approvers, same `AgentRun`, same `AgentError`), so the eval runs either one with `--impl`.
+
+### Same eval, both implementations (Sonnet 5.5)
+
+| | Loop | Graph |
+| --- | --- | --- |
+| Scenarios passed | 15/15 | 15/15 |
+| Runs succeeded | 45/45 | 45/45 |
+| Failed `file_incident` calls | 0 | 0 |
+| Avg API calls / run | 3.3 | 3.4 |
+| Avg tokens / run | 7,609 | 8,045 |
+| Max tokens | 17,406 | 17,679 |
+
+The model, prompt, schemas, tools and approval rules are identical, and so is the behaviour: the small differences are within the run-to-run noise measured above.
+
+### What the framework gave, and what it hid
+
+**Gave:**
+- **Approval that can wait.** `interrupt()` with a checkpointer pauses the run and saves its state. With a database checkpointer instead of the in-memory one used here, an approval could arrive hours later, from another process. The loop's `input()` blocks a running process.
+- **An explicit structure.** Steps and transitions are declared in `build_graph()`; adding a step is adding a node and an edge.
+- **Per-step streaming** (`stream_mode="updates"`) for progress output.
+
+**Cost or hid:**
+- **A second message format.** `AIMessage.tool_calls`, `ToolMessage(status="error")`, `response_metadata["stop_reason"]` and `usage_metadata` replace the API's blocks, with conversions back for the approvers (`ToolUseBlock`) and the evals (`AgentRun`).
+- **Re-execution on resume.** A resumed node runs again from its first line, and each finished `interrupt()` returns its saved answer. A write placed in the same node as the questions would run again on every resume, so writes live in the `tools` node, after all the questions. A test files two incidents in one reply and checks each is filed once.
+- **Serialization rules.** The checkpointer saves the state, including our `ToolCall` objects, and restores only allow-listed types (a tampered checkpoint must not create arbitrary objects).
+- **Different limits.** `recursion_limit` counts node runs (3 per round), not API calls.
+- **Type friction and dependencies.** `Runnable` return types, optional tool-call ids and loosely typed stream output needed annotations; `langgraph`, `langchain-core` and `langchain-anthropic` add to `anthropic`.
+
+**Verdict:** for an agent that answers in one go, the hand-written loop is simpler and needs no framework. LangGraph earns its place when runs must pause and resume, as human approval does in a real system, or when the flow grows into many steps and branches.
+
 ## Failure modes found by the evals
 
 | Failure | Seen as | Defence |
@@ -124,6 +172,9 @@ uv run --env-file .env python src/agent.py "inventory-service: 500 errors on sto
 uv run --env-file .env python evals/run_eval.py                    # 15 scenarios x 3
 uv run --env-file .env python evals/run_eval.py --runs 1 --only billing-injection
 uv run --env-file .env python evals/run_eval.py --model claude-haiku-5-5
+
+uv run --env-file .env python src/graph_agent.py "auth-service: login failures at 30%"
+uv run --env-file .env python evals/run_eval.py --impl graph
 ```
 
 Filed incidents go to `incidents/` (git-ignored). During evals they go to a temporary folder.
@@ -134,7 +185,7 @@ Filed incidents go to `incidents/` (git-ignored). During evals they go to a temp
 uv run pytest -q
 ```
 
-54 offline tests, no API key needed: the tools and their limits and content checks, `run_tool` error handling, every approval rule (with stub approvers and a fake `file_incident`), the code graders on hand-built traces, and the agent loop's failure path with a fake API response.
+64 offline tests, no API key needed: the tools and their limits and content checks, `run_tool` error handling, every approval rule (with stub approvers and a fake `file_incident`), the code graders on hand-built traces, the agent loop's failure path with a fake API response, and the LangGraph version's nodes and approval flow, run through the real graph (pause, save, resume) with a scripted fake Claude.
 
 ## Design decisions
 
@@ -155,7 +206,7 @@ uv run pytest -q
 
 ## Next steps
 
-- Rebuild the agent with LangGraph and compare it with the hand-written loop.
+- Use a database checkpointer (LangGraph's Postgres saver) so an approval can resume in another process.
 - Expose the tools as an MCP server, so Claude Code can investigate alerts.
 - Make Haiku viable: test `evidence` as a list of short strings instead of one long string, since the markup leak happens on long, quote-heavy arguments.
 - Run the content checks before asking the human, so an engineer never sees a garbled proposal.
