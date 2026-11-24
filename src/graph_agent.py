@@ -3,20 +3,24 @@
 Same tools, same schemas (strict), same system prompt, same trace for the evals.
 Only the control flow moves: the loop becomes a graph.
 
-    START ─► agent ──(tool calls?)──yes─► tools ─┐
-               ▲      │                           │
-               │      no ─► END                   │
-               └──────────────────────────────────┘
+    START ─► agent ──(tool calls?)──yes─► approve ─► tools ─┐
+               ▲      │                                       │
+               │      no ─► END                               │
+               └──────────────────────────────────────────────┘
+
+approve pauses the graph (interrupt) for every write call; tools then runs the
+approved calls and turns rejected ones into error results.
 
 Run:  uv run --env-file .env python src/graph_agent.py "checkout-service: 5xx error rate at 12%"
 
-Step 2 of the rebuild: no approval yet (file_incident runs without asking).
 """
 
 import operator
 import sys
+import uuid
 from typing import Annotated, TypedDict, cast
 
+from anthropic.types import ToolUseBlock
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import (
@@ -27,12 +31,29 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables import Runnable, RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.types import Command, interrupt
 
-import agent  # reuse: TOOLS, FUNCTIONS, SYSTEM_PROMPT, MODEL, MAX_STEPS, ToolCall, AgentRun
-from agent import FUNCTIONS, SYSTEM_PROMPT, TOOLS, AgentError, AgentRun, ToolCall
+import agent  # reuse everything below; agent.MODEL is read at run time (the evals' --model)
+from agent import (
+    FUNCTIONS,
+    MAX_FAILED_WRITES,
+    MAX_REJECTIONS,
+    NEEDS_APPROVAL,
+    SYSTEM_PROMPT,
+    TOO_MANY_FAILED_WRITES,
+    TOO_MANY_REJECTIONS,
+    TOOLS,
+    AgentError,
+    AgentRun,
+    Approver,
+    ToolCall,
+    ask_human,
+    rejection_message,
+)
 
 
 class State(TypedDict):
@@ -46,6 +67,10 @@ class State(TypedDict):
 
     messages: Annotated[list[AnyMessage], add_messages]
     calls: Annotated[list[ToolCall], operator.add]
+    # No reducer: each update REPLACES the old value.
+    decisions: dict[str, dict]  # tool_call_id -> {"approved": bool, "message": str}
+    rejections: int  # human "no"s so far
+    failed_writes: int  # approved file_incident calls that the tool rejected
 
 
 def make_llm() -> Runnable[LanguageModelInput, AIMessage]:
@@ -73,34 +98,80 @@ def agent_node(state: State) -> dict:
     return {"messages": [response]}
 
 
+def approve_node(state: State) -> dict:
+    """Ask a human about every write call in Claude's last reply. NO side effects here.
+
+    interrupt() pauses the whole graph and hands the proposal to whoever is running it.
+    When they resume with Command(resume=answer), this node starts again FROM THE TOP,
+    and each interrupt() returns its stored answer instead of pausing. That is why this
+    node only decides; the tools node, which runs after, is the one that writes.
+    """
+    last_message = state["messages"][-1]
+    assert isinstance(last_message, AIMessage)
+    decisions = {}
+    rejections = state["rejections"]
+
+    for call in last_message.tool_calls:
+        if call["name"] not in NEEDS_APPROVAL:
+            continue  # read tools need no approval
+        if rejections >= MAX_REJECTIONS:
+            decisions[call["id"]] = {"approved": False, "message": TOO_MANY_REJECTIONS}
+            continue  # don't ask again
+        if state["failed_writes"] >= MAX_FAILED_WRITES:
+            decisions[call["id"]] = {
+                "approved": False,
+                "message": TOO_MANY_FAILED_WRITES,
+            }
+            continue
+
+        answer = interrupt(
+            call
+        )  # pause here; resumes with {"approved": ..., "reason": ...}
+
+        if answer["approved"]:
+            decisions[call["id"]] = {"approved": True, "message": ""}
+        else:
+            rejections += 1
+            decisions[call["id"]] = {
+                "approved": False,
+                "message": rejection_message(answer["reason"]),
+            }
+
+    return {"decisions": decisions, "rejections": rejections}
+
+
 def tools_node(state: State) -> dict:
-    """Run every tool call in the last AIMessage. Same rules as run_tool in agent.py.
+    """Run the tool calls in Claude's last reply, following the approval decisions.
 
-    The last message is state["messages"][-1]; its .tool_calls is a list of dicts:
-    {"name": "search_logs", "args": {"service": ..., "query": ...}, "id": "toolu_..."}
-
-    For each tool call:
-    - try: output = FUNCTIONS[call["name"]](**call["args"]); is_error = False
-      except Exception as e: output = str(e); is_error = True
-    - make ToolMessage(content=output, tool_call_id=call["id"],
-                       status="error" if is_error else "success")
-      (status="error" becomes is_error: true in the API request)
-    - make ToolCall(call["name"], call["args"], output, is_error) for the trace
-
-    Return {"messages": [the ToolMessages], "calls": [the ToolCalls]}
+    Read tools run as before. A write call runs only if approve_node approved it;
+    a rejected one becomes an error result with the rejection message, and never runs.
     """
     last_message = state["messages"][-1]  # Claude's reply that asked for the tools
     assert isinstance(last_message, AIMessage)  # only AIMessages have .tool_calls
     tool_messages = []  # results for Claude
     tool_calls = []  # records for the trace (the evals)
+    failed_writes = state["failed_writes"]
 
     for call in last_message.tool_calls:
-        try:
-            output = FUNCTIONS[call["name"]](**call["args"])
-            is_error = False
-        except Exception as e:  # noqa: BLE001 - any failure goes back to Claude as an error
-            output = str(e)
-            is_error = True
+        approved = None  # None: a read tool, no approval needed
+        if call["name"] in NEEDS_APPROVAL:
+            assert call["id"] is not None  # Claude's tool calls always have an id
+            decision = state["decisions"][call["id"]]
+            approved = decision["approved"]
+
+        if approved is False:  # rejected: the tool never runs
+            output, is_error = decision["message"], True
+        else:
+            try:
+                output = FUNCTIONS[call["name"]](**call["args"])
+                is_error = False
+            except Exception as e:  # noqa: BLE001 - any failure goes back to Claude as an error
+                output = str(e)
+                is_error = True
+            if approved and is_error:
+                failed_writes += (
+                    1  # approved, but the tool rejected it (e.g. leaked markup)
+                )
 
         tool_messages.append(
             ToolMessage(
@@ -109,20 +180,26 @@ def tools_node(state: State) -> dict:
                 status="error" if is_error else "success",
             )
         )
-        tool_calls.append(ToolCall(call["name"], call["args"], output, is_error))
+        tool_calls.append(
+            ToolCall(call["name"], call["args"], output, is_error, approved)
+        )
 
-    return {"messages": tool_messages, "calls": tool_calls}
+    return {
+        "messages": tool_messages,
+        "calls": tool_calls,
+        "failed_writes": failed_writes,
+    }
 
 
 def route(state: State) -> str:
     """The conditional edge after the agent node: where to go next?
 
-    If the last message (an AIMessage) has tool_calls -> return "tools"
+    If the last message (an AIMessage) has tool_calls -> return "approve"
     otherwise -> return END   (END is the special node name "__end__")
     """
     last_message = state["messages"][-1]  # the reply agent_node just added
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "tools"
+        return "approve"
     return END
 
 
@@ -132,11 +209,15 @@ def route(state: State) -> str:
 def build_graph():
     graph = StateGraph(State)
     graph.add_node("agent", agent_node)
+    graph.add_node("approve", approve_node)
     graph.add_node("tools", tools_node)
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", route, ["tools", END])
+    graph.add_conditional_edges("agent", route, ["approve", END])
+    graph.add_edge("approve", "tools")
     graph.add_edge("tools", "agent")
-    return graph.compile()
+    # The checkpointer saves the state after every node. interrupt() needs it:
+    # resuming means "load the saved state and continue from the paused node".
+    return graph.compile(checkpointer=InMemorySaver())
 
 
 def to_agent_run(alert: str, state: State) -> AgentRun:
@@ -151,25 +232,53 @@ def to_agent_run(alert: str, state: State) -> AgentRun:
     return run
 
 
-def run_graph(alert: str, verbose: bool = True) -> AgentRun:
+def run_graph(
+    alert: str, approve: Approver = ask_human, verbose: bool = True
+) -> AgentRun:
     """Run the graph on one alert. Same contract as agent.run_agent."""
     graph = build_graph()
-    start: State = {"messages": [HumanMessage(alert)], "calls": []}
-    # Each node run is one "step" to LangGraph: MAX_STEPS API calls = 2 x MAX_STEPS nodes.
-    config: RunnableConfig = {"recursion_limit": 2 * agent.MAX_STEPS}
+    start: State = {
+        "messages": [HumanMessage(alert)],
+        "calls": [],
+        "decisions": {},
+        "rejections": 0,
+        "failed_writes": 0,
+    }
+    config: RunnableConfig = {
+        # Which saved conversation to continue. One id per run.
+        "configurable": {"thread_id": str(uuid.uuid4())},
+        # LangGraph counts node runs: 3 nodes per round (agent, approve, tools).
+        "recursion_limit": 3 * agent.MAX_STEPS,
+    }
     state = start
+    graph_input: State | Command = start
     try:
-        # Two streams at once, as (mode, data) pairs after each node:
-        #   "updates": {node_name: what that node returned}  -> to print progress
-        #   "values":  the full state after the reducers ran  -> to keep
-        for mode, data in graph.stream(
-            start, config, stream_mode=["updates", "values"]
-        ):
-            if mode == "values":
-                state = cast(State, data)
-            elif verbose:
+        while True:
+            pending = None  # the tool call the graph paused on, if any
+            for mode, data in graph.stream(
+                graph_input, config, stream_mode=["updates", "values"]
+            ):
+                if mode == "values":
+                    state = cast(State, data)
+                    continue
                 for node, changes in cast(dict, data).items():
-                    show(node, changes)
+                    if node == "__interrupt__":  # the graph paused in approve_node
+                        pending = changes[0].value
+                    elif verbose:
+                        show(node, changes)
+
+            if pending is None:
+                break  # the graph reached END
+            # Ask the approver (a person, a test stub, or the evals' approve_all),
+            # then resume the paused graph with the answer.
+            block = ToolUseBlock(
+                id=pending["id"],
+                name=pending["name"],
+                input=pending["args"],
+                type="tool_use",
+            )
+            approved, reason = approve(block)
+            graph_input = Command(resume={"approved": approved, "reason": reason})
     except GraphRecursionError as e:
         raise AgentError(
             f"Agent did not finish within {agent.MAX_STEPS} steps",
@@ -179,6 +288,8 @@ def run_graph(alert: str, verbose: bool = True) -> AgentRun:
         raise AgentError(str(e), to_agent_run(alert, state)) from e
 
     run = to_agent_run(alert, state)
+    run.rejections = state["rejections"]
+    run.failed_writes = state["failed_writes"]
     if not run.answer.strip():
         raise AgentError("Agent ended without an answer", run)
     return run
@@ -186,6 +297,8 @@ def run_graph(alert: str, verbose: bool = True) -> AgentRun:
 
 def show(node: str, changes: dict) -> None:
     """Print what a node did, like the loop's step lines."""
+    for decision in changes.get("decisions", {}).values():
+        print(f"  [{node}] {'approved' if decision['approved'] else 'rejected'}")
     for m in changes.get("messages", []):
         if isinstance(m, AIMessage):
             for call in m.tool_calls:

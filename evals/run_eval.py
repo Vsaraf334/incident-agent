@@ -9,6 +9,7 @@ A scenario passes if at least 2 of its 3 runs succeed. Gate: >= 10 of 15 scenari
 
 Run:  uv run --env-file .env python evals/run_eval.py [--runs 3] [--only checkout-timeout]
                                                       [--model claude-sonnet-5-5]
+                                                      [--impl loop|graph]
 """
 
 import argparse
@@ -24,6 +25,7 @@ EVALS = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVALS.parent / "src"))
 
 import agent
+import graph_agent
 from grading import filed_incident, missing_checks, tools_used
 from judge import JUDGE_MODEL, judge
 from tools import file_incident
@@ -38,11 +40,15 @@ def approve_all(_block) -> tuple[bool, str]:
     return True, ""
 
 
-def run_one(scenario: dict) -> dict:
+# The two implementations of the same agent: same contract, (alert, approve, verbose) -> AgentRun
+RUNNERS = {"loop": agent.run_agent, "graph": graph_agent.run_graph}
+
+
+def run_one(scenario: dict, impl: str = "loop") -> dict:
     """One agent run on one scenario, graded. Never raises: a crash is a failed run."""
     start = time.perf_counter()
     try:
-        run = agent.run_agent(scenario["alert"], approve=approve_all, verbose=False)
+        run = RUNNERS[impl](scenario["alert"], approve=approve_all, verbose=False)
         incident = filed_incident(run)
         verdict = judge(scenario, run.answer, incident["cause"] if incident else None)
     except agent.AgentError as e:  # the agent failed: keep its trace for debugging
@@ -152,6 +158,7 @@ def main() -> None:
     parser.add_argument("--only", help="run a single scenario id")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--model", default=agent.MODEL, help="the agent's model")
+    parser.add_argument("--impl", choices=RUNNERS, default="loop", help="loop or graph")
     args = parser.parse_args()
 
     with SCENARIOS.open() as f:
@@ -164,8 +171,8 @@ def main() -> None:
     agent.FUNCTIONS["file_incident"] = partial(file_incident, incidents_dir=Path(tmp))
 
     agent.MODEL = args.model  # run_agent reads agent.MODEL on every call
-    results_file = EVALS / f"results-{args.model}.jsonl"
-    print(f"Agent model: {args.model}. Judge: {JUDGE_MODEL}.")
+    results_file = EVALS / f"results-{args.impl}-{args.model}.jsonl"
+    print(f"Agent: {args.impl}, model {args.model}. Judge: {JUDGE_MODEL}.")
 
     jobs = [s for s in scenarios for _ in range(args.runs)]
     print(
@@ -174,7 +181,7 @@ def main() -> None:
     )
     # like a Java ExecutorService: run the agents 4 at a time
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        results = list(pool.map(run_one, jobs))
+        results = list(pool.map(partial(run_one, impl=args.impl), jobs))
 
     with results_file.open("w") as f:
         for r in results:
