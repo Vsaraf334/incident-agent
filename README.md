@@ -6,7 +6,7 @@ Every behaviour is measured with an evaluation suite of 15 scenarios, each run 3
 
 All data is fake: 11 services, their deploys and their logs, in `data/`.
 
-The agent exists twice: a hand-written loop, and a [LangGraph rebuild](#langgraph-rebuild) with pausable approval. Both pass the same eval with the same scores.
+The agent exists twice: a hand-written loop, and a [LangGraph rebuild](#langgraph-rebuild) with pausable approval. Both pass the same eval with the same scores. The tools are also an [MCP server](#use-it-from-claude-code-mcp), so Claude Code can investigate alerts, and it always asks before filing.
 
 Built with Python, the Anthropic Python SDK and LangGraph (Claude Sonnet 5.5 as the agent and the judge; Claude Haiku 5.5 measured as a cheaper alternative).
 
@@ -53,6 +53,7 @@ alert ──► agent loop (src/agent.py) ──► Claude ──► tool_use �
 | --- | --- |
 | `src/tools.py` | The three tools as plain functions over `data/`: `get_recent_deploys`, `search_logs`, `file_incident` (writes `incidents/INC-001.md`). |
 | `src/agent.py` | Tool schemas, system prompt, the agent loop, the approval step, and the trace (`AgentRun`, `ToolCall`). |
+| `src/mcp_server.py` | The three tools as an MCP server, for hosts such as Claude Code. `file_incident` requires user approval on every call. |
 | `src/graph_agent.py` | The same agent as a LangGraph graph: `agent`, `approve` and `tools` nodes, approval with `interrupt()`. Reuses the tools, schemas and prompt from `agent.py`. |
 | `evals/scenarios.jsonl` | 15 scenarios: alert, whether an incident is expected, the expected cause, what must not be blamed, and which evidence must be checked. |
 | `evals/grading.py` | Code graders that read the trace: what was filed, which checks were skipped, tool counts. |
@@ -146,6 +147,36 @@ The model, prompt, schemas, tools and approval rules are identical, and so is th
 
 **Verdict:** for an agent that answers in one go, the hand-written loop is simpler and needs no framework. LangGraph earns its place when runs must pause and resume, as human approval does in a real system, or when the flow grows into many steps and branches.
 
+## Use it from Claude Code (MCP)
+
+`src/mcp_server.py` exposes the same three tools over MCP. It is a thin adapter over `tools.py`, so the content checks run on every call, whatever the host. Register it once:
+
+```bash
+claude mcp add --scope user incident-agent -- uv run --directory /path/to/incident-agent python src/mcp_server.py
+```
+
+Then ask Claude Code, for example: "Use the incident-agent tools to investigate this alert and file an incident if the evidence supports it: billing-service: 5xx errors on invoice creation".
+
+### Approval when someone else owns the loop
+
+With MCP, the host runs the agent loop, so the approval step built into `agent.py` and `graph_agent.py` doesn't exist. What the server controls:
+
+| Layer | Enforced by | Works with any host? |
+| --- | --- | --- |
+| Content checks in `file_incident` (markup, empty fields, severity) | this server's code | yes |
+| `_meta["anthropic/requiresUserInteraction"] = true` on `file_incident` | Claude Code | no, Claude Code only |
+| Read-only annotations on the read tools, the on-call rules as `instructions` | hints; the host decides | as the host chooses |
+
+According to Claude Code's documentation, a tool with `requiresUserInteraction` gets a permission prompt on every call, even in auto and bypass modes; allow rules don't skip it, there is no "don't ask again", and where nobody can answer, the call is denied. Checked in practice:
+
+- The prompt offered only **Yes** or **No** (no "don't ask again").
+- With an explicit allow rule for `mcp__incident-agent__file_incident`, it **still asked**.
+- Answering **No** interrupted the turn before the server was called; nothing was filed.
+
+Annotations don't change Claude Code's permissions (`read_only_hint` lets it run those calls in parallel), and "destructive" in MCP means deleting or overwriting, so `file_incident`, which only adds a record, is marked `destructive_hint=False` and `idempotent_hint=False`.
+
+**The portable alternative is elicitation:** the server asks the user during the call (`ctx.elicit(...)`) through any host that supports it, with a form it designs. It wasn't used here because the host still decides how to answer (a hook can answer automatically), and the server would have to fail closed itself when the host can't ask. For a server published for unknown hosts, it would be the better choice.
+
 ## Failure modes found by the evals
 
 | Failure | Seen as | Defence |
@@ -185,7 +216,7 @@ Filed incidents go to `incidents/` (git-ignored). During evals they go to a temp
 uv run pytest -q
 ```
 
-64 offline tests, no API key needed: the tools and their limits and content checks, `run_tool` error handling, every approval rule (with stub approvers and a fake `file_incident`), the code graders on hand-built traces, the agent loop's failure path with a fake API response, and the LangGraph version's nodes and approval flow, run through the real graph (pause, save, resume) with a scripted fake Claude.
+75 offline tests, no API key needed: the tools and their limits and content checks, `run_tool` error handling, every approval rule (with stub approvers and a fake `file_incident`), the code graders on hand-built traces, the agent loop's failure path with a fake API response, the LangGraph version's nodes and approval flow, run through the real graph (pause, save, resume) with a scripted fake Claude, and the MCP server through an in-process MCP client (tool metadata, schemas, errors reaching the model, nothing written for rejected content).
 
 ## Design decisions
 
@@ -207,6 +238,7 @@ uv run pytest -q
 ## Next steps
 
 - Use a database checkpointer (LangGraph's Postgres saver) so an approval can resume in another process.
-- Expose the tools as an MCP server, so Claude Code can investigate alerts.
+- Give the agent the current time with each alert. Claude Code noticed the evidence was five days old; the agent's own prompt has no date, so it can't check whether the evidence is current.
+- Add elicitation to `file_incident` as a portable confirmation for MCP hosts other than Claude Code.
 - Make Haiku viable: test `evidence` as a list of short strings instead of one long string, since the markup leak happens on long, quote-heavy arguments.
 - Run the content checks before asking the human, so an engineer never sees a garbled proposal.
