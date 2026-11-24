@@ -32,6 +32,7 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -217,7 +218,11 @@ def build_graph():
     graph.add_edge("tools", "agent")
     # The checkpointer saves the state after every node. interrupt() needs it:
     # resuming means "load the saved state and continue from the paused node".
-    return graph.compile(checkpointer=InMemorySaver())
+    # The checkpointer serializes the state. Our own ToolCall dataclass is in it, and
+    # LangGraph only restores types it is told are safe (a tampered checkpoint must not
+    # be able to create arbitrary objects), so we allow exactly that one class.
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[("agent", "ToolCall")])
+    return graph.compile(checkpointer=InMemorySaver(serde=serde))
 
 
 def to_agent_run(alert: str, state: State) -> AgentRun:
